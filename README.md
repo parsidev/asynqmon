@@ -106,11 +106,16 @@ _Note_: Use `--redis-url` to specify address, db-number, and password with one f
 | `--redis-db`(int)                 | `REDIS_DB`                | redis database number                                                                                                        | 0                |
 | `--redis-password`(string)        | `REDIS_PASSWORD`          | password to use when connecting to redis server                                                                              | ""               |
 | `--redis-cluster-nodes`(string)   | `REDIS_CLUSTER_NODES`     | comma separated list of host:port addresses of cluster nodes                                                                 | ""               |
+| `--redis-prefix`(string)          | `REDIS_PREFIX`            | prefix used for asynq redis keys                                                                                             | ""               |
 | `--redis-tls`(string)             | `REDIS_TLS`               | server name for TLS validation used when connecting to redis server                                                          | ""               |
 | `--redis-insecure-tls`(bool)      | `REDIS_INSECURE_TLS`      | disable TLS certificate host checks                                                                                          | false            |
 | `--enable-metrics-exporter`(bool) | `ENABLE_METRICS_EXPORTER` | enable prometheus metrics exporter to expose queue metrics                                                                   | false            |
 | `--prometheus-addr`(string)       | `PROMETHEUS_ADDR`         | address of prometheus server to query time series                                                                            | ""               |
 | `--read-only`(bool)               | `READ_ONLY`               | use web UI in read-only mode                                                                                                 | false            |
+| `--basic-auth-username`(string)   | `BASIC_AUTH_USERNAME`     | username for HTTP basic authentication                                                                                       | ""               |
+| `--basic-auth-password`(string)   | `BASIC_AUTH_PASSWORD`     | password for HTTP basic authentication                                                                                       | ""               |
+
+Basic authentication is enabled only when both `--basic-auth-username` and `--basic-auth-password` are set, or both corresponding environment variables are set.
 
 ### Connecting to Redis
 

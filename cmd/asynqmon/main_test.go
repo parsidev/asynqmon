@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/tls"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -28,13 +30,60 @@ func TestParseFlags(t *testing.T) {
 				RedisURL:              "",
 				RedisInsecureTLS:      false,
 				RedisClusterNodes:     "",
+				RedisPrefix:           "",
 				MaxPayloadLength:      200,
 				MaxResultLength:       200,
 				EnableMetricsExporter: false,
 				PrometheusServerAddr:  "",
 				ReadOnly:              false,
+				BasicAuthUsername:     "",
+				BasicAuthPassword:     "",
 
 				Args: []string{},
+			},
+		},
+		{
+			args: []string{"--basic-auth-username", "admin", "--basic-auth-password", "secret"},
+			want: &Config{
+				Port:                  8080,
+				RedisAddr:             "127.0.0.1:6379",
+				RedisDB:               0,
+				RedisPassword:         "",
+				RedisTLS:              "",
+				RedisURL:              "",
+				RedisInsecureTLS:      false,
+				RedisClusterNodes:     "",
+				RedisPrefix:           "",
+				ReadOnly:              false,
+				MaxPayloadLength:      200,
+				MaxResultLength:       200,
+				BasicAuthUsername:     "admin",
+				BasicAuthPassword:     "secret",
+				EnableMetricsExporter: false,
+				PrometheusServerAddr:  "",
+				Args:                  []string{},
+			},
+		},
+		{
+			args: []string{"--redis-prefix", "tenant-a"},
+			want: &Config{
+				Port:                  8080,
+				RedisAddr:             "127.0.0.1:6379",
+				RedisDB:               0,
+				RedisPassword:         "",
+				RedisTLS:              "",
+				RedisURL:              "",
+				RedisInsecureTLS:      false,
+				RedisClusterNodes:     "",
+				RedisPrefix:           "tenant-a",
+				MaxPayloadLength:      200,
+				MaxResultLength:       200,
+				EnableMetricsExporter: false,
+				PrometheusServerAddr:  "",
+				ReadOnly:              false,
+				BasicAuthUsername:     "",
+				BasicAuthPassword:     "",
+				Args:                  []string{},
 			},
 		},
 	}
@@ -56,6 +105,59 @@ func TestParseFlags(t *testing.T) {
 
 }
 
+func TestWithOptionalBasicAuth(t *testing.T) {
+	handler := withOptionalBasicAuth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), &Config{
+		BasicAuthUsername: "admin",
+		BasicAuthPassword: "secret",
+	})
+
+	tests := []struct {
+		desc       string
+		username   string
+		password   string
+		wantStatus int
+	}{
+		{desc: "missing credentials", wantStatus: http.StatusUnauthorized},
+		{desc: "wrong credentials", username: "admin", password: "bad", wantStatus: http.StatusUnauthorized},
+		{desc: "correct credentials", username: "admin", password: "secret", wantStatus: http.StatusNoContent},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tc.username != "" || tc.password != "" {
+				req.SetBasicAuth(tc.username, tc.password)
+			}
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestWithOptionalBasicAuthDisabled(t *testing.T) {
+	handler := withOptionalBasicAuth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), &Config{
+		BasicAuthUsername: "admin",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
 func TestMakeRedisConnOpt(t *testing.T) {
 	var tests = []struct {
 		desc string
@@ -68,11 +170,13 @@ func TestMakeRedisConnOpt(t *testing.T) {
 				RedisAddr:     "localhost:6380",
 				RedisDB:       1,
 				RedisPassword: "foo",
+				RedisPrefix:   "tenant-a",
 			},
 			want: asynq.RedisClientOpt{
 				Addr:     "localhost:6380",
 				DB:       1,
 				Password: "foo",
+				Prefix:   "tenant-a",
 			},
 		},
 		{
@@ -106,17 +210,19 @@ func TestMakeRedisConnOpt(t *testing.T) {
 				MasterName: "mymaster",
 				SentinelAddrs: []string{
 					"localhost:5000", "localhost:5001", "localhost:5002"},
-				Password: "secretpassword", // FIXME: Shouldn't this be SentinelPassword instead?
+				SentinelPassword: "secretpassword",
 			},
 		},
 		{
 			desc: "With cluster nodes",
 			cfg: &Config{
 				RedisClusterNodes: "localhost:5000,localhost:5001,localhost:5002,localhost:5003,localhost:5004,localhost:5005",
+				RedisPrefix:       "tenant-a",
 			},
 			want: asynq.RedisClusterClientOpt{
 				Addrs: []string{
 					"localhost:5000", "localhost:5001", "localhost:5002", "localhost:5003", "localhost:5004", "localhost:5005"},
+				Prefix: "tenant-a",
 			},
 		},
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -33,11 +34,14 @@ type Config struct {
 	RedisURL          string
 	RedisInsecureTLS  bool
 	RedisClusterNodes string
+	RedisPrefix       string
 
 	// UI related configs
-	ReadOnly         bool
-	MaxPayloadLength int
-	MaxResultLength  int
+	ReadOnly          bool
+	MaxPayloadLength  int
+	MaxResultLength   int
+	BasicAuthUsername string
+	BasicAuthPassword string
 
 	// Prometheus related configs
 	EnableMetricsExporter bool
@@ -67,11 +71,14 @@ func parseFlags(progname string, args []string) (cfg *Config, output string, err
 	flags.StringVar(&conf.RedisURL, "redis-url", getEnvDefaultString("REDIS_URL", ""), "URL to redis server")
 	flags.BoolVar(&conf.RedisInsecureTLS, "redis-insecure-tls", getEnvOrDefaultBool("REDIS_INSECURE_TLS", false), "disable TLS certificate host checks")
 	flags.StringVar(&conf.RedisClusterNodes, "redis-cluster-nodes", getEnvDefaultString("REDIS_CLUSTER_NODES", ""), "comma separated list of host:port addresses of cluster nodes")
+	flags.StringVar(&conf.RedisPrefix, "redis-prefix", getEnvDefaultString("REDIS_PREFIX", ""), "prefix used for asynq redis keys")
 	flags.IntVar(&conf.MaxPayloadLength, "max-payload-length", getEnvOrDefaultInt("MAX_PAYLOAD_LENGTH", 200), "maximum number of utf8 characters printed in the payload cell in the Web UI")
 	flags.IntVar(&conf.MaxResultLength, "max-result-length", getEnvOrDefaultInt("MAX_RESULT_LENGTH", 200), "maximum number of utf8 characters printed in the result cell in the Web UI")
 	flags.BoolVar(&conf.EnableMetricsExporter, "enable-metrics-exporter", getEnvOrDefaultBool("ENABLE_METRICS_EXPORTER", false), "enable prometheus metrics exporter to expose queue metrics")
 	flags.StringVar(&conf.PrometheusServerAddr, "prometheus-addr", getEnvDefaultString("PROMETHEUS_ADDR", ""), "address of prometheus server to query time series")
 	flags.BoolVar(&conf.ReadOnly, "read-only", getEnvOrDefaultBool("READ_ONLY", false), "restrict to read-only mode")
+	flags.StringVar(&conf.BasicAuthUsername, "basic-auth-username", getEnvDefaultString("BASIC_AUTH_USERNAME", ""), "username for HTTP basic authentication")
+	flags.StringVar(&conf.BasicAuthPassword, "basic-auth-password", getEnvDefaultString("BASIC_AUTH_PASSWORD", ""), "password for HTTP basic authentication")
 
 	err = flags.Parse(args)
 	if err != nil {
@@ -98,6 +105,7 @@ func makeRedisConnOpt(cfg *Config) (asynq.RedisConnOpt, error) {
 			Addrs:     strings.Split(cfg.RedisClusterNodes, ","),
 			Password:  cfg.RedisPassword,
 			TLSConfig: makeTLSConfig(cfg),
+			Prefix:    cfg.RedisPrefix,
 		}, nil
 	}
 
@@ -109,6 +117,7 @@ func makeRedisConnOpt(cfg *Config) (asynq.RedisConnOpt, error) {
 		}
 		connOpt := res.(asynq.RedisFailoverClientOpt) // safe to type-assert
 		connOpt.TLSConfig = makeTLSConfig(cfg)
+		connOpt.Prefix = cfg.RedisPrefix
 		return connOpt, nil
 	}
 
@@ -128,6 +137,7 @@ func makeRedisConnOpt(cfg *Config) (asynq.RedisConnOpt, error) {
 	if connOpt.TLSConfig == nil {
 		connOpt.TLSConfig = makeTLSConfig(cfg)
 	}
+	connOpt.Prefix = cfg.RedisPrefix
 	return connOpt, nil
 }
 
@@ -177,7 +187,7 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Handler:      mux,
+		Handler:      withOptionalBasicAuth(mux, cfg),
 		Addr:         fmt.Sprintf(":%d", cfg.Port),
 		WriteTimeout: 10 * time.Second,
 		ReadTimeout:  10 * time.Second,
@@ -236,4 +246,25 @@ func getEnvOrDefaultBool(key string, def bool) bool {
 		return def
 	}
 	return v
+}
+
+func withOptionalBasicAuth(h http.Handler, cfg *Config) http.Handler {
+	if cfg.BasicAuthUsername == "" || cfg.BasicAuthPassword == "" {
+		return h
+	}
+
+	expectedUsername := []byte(cfg.BasicAuthUsername)
+	expectedPassword := []byte(cfg.BasicAuthPassword)
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok ||
+			subtle.ConstantTimeCompare([]byte(username), expectedUsername) != 1 ||
+			subtle.ConstantTimeCompare([]byte(password), expectedPassword) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
