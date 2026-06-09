@@ -1,6 +1,7 @@
 package asynqmon
 
 import (
+	"crypto/subtle"
 	"embed"
 	"fmt"
 	"net/http"
@@ -42,6 +43,11 @@ type Options struct {
 
 	// Set ReadOnly to true to restrict user to view-only mode.
 	ReadOnly bool
+	
+	BasicAuthUsername string
+
+	BasicAuthPassword string
+
 }
 
 // HTTPHandler is a http.Handler for asynqmon application.
@@ -100,7 +106,17 @@ func (h *HTTPHandler) RootPath() string {
 var staticContents embed.FS
 
 func muxRouter(opts Options, rc redis.UniversalClient, inspector *asynq.Inspector) *mux.Router {
-	router := mux.NewRouter().PathPrefix(opts.RootPath).Subrouter()
+		router := mux.NewRouter().PathPrefix(opts.RootPath).Subrouter()
+
+	// Enable Basic Auth only when both username and password are provided.
+	if opts.BasicAuthUsername != "" && opts.BasicAuthPassword != "" {
+		router.Use(
+			basicAuthMiddleware(
+				opts.BasicAuthUsername,
+				opts.BasicAuthPassword,
+			),
+		)
+	}
 
 	var payloadFmt PayloadFormatter = DefaultPayloadFormatter
 	if opts.PayloadFormatter != nil {
@@ -113,6 +129,7 @@ func muxRouter(opts Options, rc redis.UniversalClient, inspector *asynq.Inspecto
 	}
 
 	api := router.PathPrefix("/api").Subrouter()
+
 
 	// Queue endpoints.
 	api.HandleFunc("/queues", newListQueuesHandlerFunc(inspector)).Methods("GET")
@@ -234,4 +251,24 @@ func restrictToReadOnly(h http.Handler) http.Handler {
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+func basicAuthMiddleware(username, password string) mux.MiddlewareFunc {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, pass, ok := r.BasicAuth()
+
+			userMatch := subtle.ConstantTimeCompare([]byte(user),[]byte(username)) == 1
+
+			passMatch := subtle.ConstantTimeCompare([]byte(pass),[]byte(password)) == 1
+
+			if !ok || !userMatch || !passMatch {
+				w.Header().Set("WWW-Authenticate", `Basic realm="Asynqmon"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
